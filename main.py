@@ -6,6 +6,7 @@ import numpy as np
 from model import pix2pix
 import tensorflow as tf
 
+
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--dataset_name', dest='dataset_name', default='facades', help='name of the dataset')
 parser.add_argument('--epoch', dest='epoch', type=int, default=200, help='# of epoch')
@@ -46,8 +47,8 @@ def main(_):
 
     with tf.Session() as sess:
         model = pix2pix(sess, image_size=args.fine_size, batch_size=args.batch_size,
-                        output_size=args.fine_size, dataset_name=args.dataset_name,
-                        checkpoint_dir=args.checkpoint_dir, sample_dir=args.sample_dir)
+                            output_size=args.fine_size, dataset_name=args.dataset_name,
+                            checkpoint_dir=args.checkpoint_dir, sample_dir=args.sample_dir)
 
         if args.phase == 'train':
             model.train(args)
