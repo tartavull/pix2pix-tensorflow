@@ -8,9 +8,10 @@ from six.moves import xrange
 
 from ops import *
 from utils import *
+from datetime import datetime
 
 class pix2pix(object):
-    def __init__(self, sess, image_size=256,
+    def __init__(self, sess, train_in, global_step, args, image_size=256,
                  batch_size=1, sample_size=1, output_size=256,
                  gf_dim=64, df_dim=64, L1_lambda=100,
                  input_c_dim=3, output_c_dim=3, dataset_name='facades',
@@ -40,20 +41,25 @@ class pix2pix(object):
         self.output_c_dim = output_c_dim
 
         self.L1_lambda = L1_lambda
-
         # batch normalization : deals with poor initialization helps gradient flow
         self.dataset_name = dataset_name
+        self.train_in = train_in
+        self.global_step = global_step
+        self.sample_dir = args.sample_dir
+        self.checkpoint_dir = args.checkpoint_dir
         self.checkpoint_dir = checkpoint_dir
         self.build_model()
 
     def build_model(self):
-        self.real_data = tf.placeholder(tf.float32,
-                                        [self.batch_size, self.image_size, self.image_size,
-                                         self.input_c_dim + self.output_c_dim],
-                                        name='real_A_and_B_images')
+        # self.real_data = tf.placeholder(tf.float32,
+        #                                 [self.batch_size, self.image_size, self.image_size,
+        #                                  self.input_c_dim + self.output_c_dim],
+        #                                 name='real_A_and_B_images')
 
-        self.real_B = self.real_data[:, :, :, :self.input_c_dim]
-        self.real_A = self.real_data[:, :, :, self.input_c_dim:self.input_c_dim + self.output_c_dim]
+        self.real_data = self.train_in
+
+        self.real_B = self.real_data[:, :, :self.image_size, :]
+        self.real_A = self.real_data[:, :, self.image_size:, :]
 
         self.fake_B = self.generator(self.real_A)
 
@@ -97,29 +103,32 @@ class pix2pix(object):
             sample_images = np.array(sample).astype(np.float32)
         return sample_images
 
-    def sample_model(self, sample_dir, epoch, idx):
+    def sample_model(self, sample_dir, step):
         sample_images = self.load_random_samples()
         samples, d_loss, g_loss = self.sess.run(
             [self.fake_B, self.d_loss, self.g_loss],
             feed_dict={self.real_data: sample_images}
         )
         save_images(samples, [self.batch_size, 1],
-                    './{}/train_{:02d}_{:04d}.png'.format(sample_dir, epoch, idx))
+                    './{}/train_{:04d}.png'.format(sample_dir, step))
         print("[Sample] d_loss: {:.8f}, g_loss: {:.8f}".format(d_loss, g_loss))
 
     def train(self, args):
         """Train pix2pix"""
-        d_optim = tf.train.AdamOptimizer(args.lr, beta1=args.beta1) \
+        self.d_optim = tf.train.AdamOptimizer(args.lr, beta1=args.beta1) \
                           .minimize(self.d_loss, var_list=self.d_vars)
-        g_optim = tf.train.AdamOptimizer(args.lr, beta1=args.beta1) \
+        self.g_optim = tf.train.AdamOptimizer(args.lr, beta1=args.beta1) \
                           .minimize(self.g_loss, var_list=self.g_vars)
-        tf.initialize_all_variables().run()
 
         self.quick_summary = tf.merge_summary([self.d__sum, self.d_loss_fake_sum, 
             self.g_loss_sum,self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
         
         self.full_summary = tf.merge_summary([self.fake_AB_sum])
-        self.writer = tf.train.SummaryWriter("./logs", self.sess.graph)
+
+        # Create a summary writer, add the 'graph' to the event file
+        log_datetime = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.writer = tf.train.SummaryWriter('./logs/'+log_datetime,
+          self.sess.graph, flush_secs=30, max_queue=30)
 
         counter = 1
         start_time = time.time()
@@ -129,61 +138,41 @@ class pix2pix(object):
         else:
             print(" [!] Load failed...")
 
-        d_loss, g_loss = 0.0 ,0.0
-        for epoch in xrange(args.epoch):
-            data = glob('./datasets/{}/train/*.jpg'.format(self.dataset_name))
-            #np.random.shuffle(data)
-            batch_idxs = min(len(data), args.train_size) // self.batch_size
+        self.last_d_loss, self.last_g_loss = 0.0 ,0.0
 
-            for idx in xrange(0, batch_idxs):
-                batch_files = data[idx*self.batch_size:(idx+1)*self.batch_size]
-                batch = [load_data(batch_file) for batch_file in batch_files]
-                if (self.is_grayscale):
-                    batch_images = np.array(batch).astype(np.float32)[:, :, :, None]
-                else:
-                    batch_images = np.array(batch).astype(np.float32)
+    def train_step(self):
+        if self.last_d_loss > self.last_g_loss:
+            # Update D network
+            _, summary_str, self.last_d_loss, self.last_g_loss , step = self.sess.run([
+                self.d_optim, self.quick_summary, self.d_loss, self.g_loss, self.global_step])
+        else:
+            # Update G network
+            _, summary_str, self.last_d_loss, self.last_g_loss , step = self.sess.run([
+                self.g_optim, self.quick_summary, self.d_loss, self.g_loss, self.global_step])
 
-                if d_loss > g_loss:
-                    # Update D network
-                    _, summary_str, d_loss, g_loss = self.sess.run([d_optim, self.quick_summary, self.d_loss, self.g_loss],
-                                                   feed_dict={ self.real_data: batch_images })
-                    self.writer.add_summary(summary_str, counter)
-                else:
-                    # Update G network
-                    _, summary_str, d_loss, g_loss = self.sess.run([g_optim, self.quick_summary, self.d_loss, self.g_loss],
-                                                   feed_dict={ self.real_data: batch_images })
-                    self.writer.add_summary(summary_str, counter)
+        self.writer.add_summary(summary_str, step)
+        if step % 100 == 0:
+            summary_str = self.sess.run(self.full_summary)
+            self.writer.add_summary(summary_str, step)
+            self.sample_model(self.sample_dir,step)
 
-                self.writer.add_summary(summary_str, counter)
-                counter += 1
-                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                    % (epoch, idx, batch_idxs,
-                        time.time() - start_time, d_loss, g_loss))
-
-                if np.mod(counter, 100) == 1:
-                    summary_str = self.sess.run(self.full_summary,
-                                                feed_dict={ self.real_data: batch_images })
-                    self.writer.add_summary(summary_str, counter)
-                    self.sample_model(args.sample_dir, epoch, idx)
-
-                if np.mod(counter, 500) == 2:
-                    self.save(args.checkpoint_dir, counter)
+        if step % 500 == 0:
+            self.save(self.checkpoint_dir, step)
 
     def discriminator(self, image, y=None, reuse=None):
-        
-        with tf.variable_scope('discrimintator', reuse=reuse):
-            self.d_bn1 = batch_norm(name='d_bn1')
-            self.d_bn2 = batch_norm(name='d_bn2')
-            self.d_bn3 = batch_norm(name='d_bn3')
+        with tf.variable_scope('discriminator', reuse=reuse):
 
             # image is 256 x 256 x (input_c_dim + output_c_dim)
             h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
             # h0 is (128 x 128 x self.df_dim)
-            h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim*2, name='d_h1_conv')))
+            d_bn1 = batch_norm(name='d_bn1')
+            h1 = lrelu(d_bn1(conv2d(h0, self.df_dim*2, name='d_h1_conv')))
             # h1 is (64 x 64 x self.df_dim*2)
-            h2 = lrelu(self.d_bn2(conv2d(h1, self.df_dim*4, name='d_h2_conv')))
+            d_bn2 = batch_norm(name='d_bn2')
+            h2 = lrelu(d_bn2(conv2d(h1, self.df_dim*4, name='d_h2_conv')))
             # h2 is (32x 32 x self.df_dim*4)
-            h3 = lrelu(self.d_bn3(conv2d(h2, self.df_dim*8, d_h=1, d_w=1, name='d_h3_conv')))
+            d_bn3 = batch_norm(name='d_bn3')
+            h3 = lrelu(d_bn3(conv2d(h2, self.df_dim*8, d_h=1, d_w=1, name='d_h3_conv')))
             # h3 is (16 x 16 x self.df_dim*8)
             h4 = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'd_h3_lin')
 
@@ -191,7 +180,7 @@ class pix2pix(object):
 
     def generator(self, image, y=None):
 
-        with tf.variable_scope('generator', reuse=None):
+        with tf.variable_scope('generator'):
             self.g_bn_e2 = batch_norm(name='g_bn_e2')
             self.g_bn_e3 = batch_norm(name='g_bn_e3')
             self.g_bn_e4 = batch_norm(name='g_bn_e4')
@@ -324,7 +313,6 @@ class pix2pix(object):
         sample_images = [sample_images[i:i+self.batch_size]
                          for i in xrange(0, len(sample_images), self.batch_size)]
         sample_images = np.array(sample_images)
-        print sample_images.shape
 
         start_time = time.time()
         if self.load(self.checkpoint_dir):

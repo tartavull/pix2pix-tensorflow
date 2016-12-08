@@ -3,14 +3,14 @@ import os
 import scipy.misc
 import numpy as np
 
-from model import pix2pix
+from runner import QueueRunner
 import tensorflow as tf
 
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--dataset_name', dest='dataset_name', default='facades', help='name of the dataset')
 parser.add_argument('--epoch', dest='epoch', type=int, default=200, help='# of epoch')
-parser.add_argument('--batch_size', dest='batch_size', type=int, default=1, help='# images in batch')
+parser.add_argument('--batch_size', dest='batch_size', type=int, default=12, help='# images in batch')
 parser.add_argument('--train_size', dest='train_size', type=int, default=1e8, help='# images used to train')
 parser.add_argument('--load_size', dest='load_size', type=int, default=286, help='scale images to this size')
 parser.add_argument('--fine_size', dest='fine_size', type=int, default=256, help='then crop to this size')
@@ -38,6 +38,8 @@ parser.add_argument('--L1_lambda', dest='L1_lambda', type=float, default=100.0, 
 args = parser.parse_args()
 
 def main(_):
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(0)
+
     if not os.path.exists(args.checkpoint_dir):
         os.makedirs(args.checkpoint_dir)
     if not os.path.exists(args.sample_dir):
@@ -45,15 +47,21 @@ def main(_):
     if not os.path.exists(args.test_dir):
         os.makedirs(args.test_dir)
 
-    with tf.Session() as sess:
-        model = pix2pix(sess, image_size=args.fine_size, batch_size=args.batch_size,
-                            output_size=args.fine_size, dataset_name=args.dataset_name,
-                            checkpoint_dir=args.checkpoint_dir, sample_dir=args.sample_dir)
+   # Create a session for running operations in the Graph.
+    config = tf.ConfigProto(
+    gpu_options = tf.GPUOptions(allow_growth=True),
+    log_device_placement=False,
+    allow_soft_placement=True)
 
-        if args.phase == 'train':
-            model.train(args)
-        else:
-            model.test(args)
+    with tf.Session(config=config) as sess:
+   
+
+        QueueRunner(sess, args, './datasets/{}/train/*.jpg'.format(args.dataset_name), batch_size=args.batch_size)
+
+        # if args.phase == 'train':
+        #     model.train(args)
+        # else:
+        #     model.test(args)
 
 if __name__ == '__main__':
     tf.app.run()
